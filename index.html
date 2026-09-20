@@ -68,6 +68,17 @@
     font-size: 0.95rem;
     cursor: pointer;
   }
+  #letterInput {
+    width: 3rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: 8px;
+    border: 1px solid #44445c;
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 0.95rem;
+    text-align: center;
+    text-transform: uppercase;
+  }
   button:hover { filter: brightness(1.15); }
   select {
     padding: 0.45rem 0.5rem;
@@ -99,9 +110,20 @@
       <option value="shapes">Shapes</option>
       <option value="rings">Rings</option>
       <option value="stripes">Stripes</option>
+      <option value="pixels">Pixels</option>
+      <option value="mirror">Mirror</option>
+      <option value="waves">Waves</option>
+      <option value="rays">Rays</option>
+      <option value="blocks">Blocks</option>
+      <option value="dots">Dots</option>
+      <option value="checker">Checker</option>
+      <option value="spiral">Spiral</option>
+      <option value="blobs">Blobs</option>
     </select>
     <label for="sizeInput">Download size (px):</label>
     <input type="number" id="sizeInput" min="16" max="1024" step="1" value="256">
+    <label for="letterInput" title="Optional single character drawn on top">Letter:</label>
+    <input type="text" id="letterInput" maxlength="1" autocomplete="off" spellcheck="false">
     <button id="regenBtn" type="button">Regenerate</button>
     <button id="downloadBtn" type="button">Download PNG</button>
   </div>
@@ -114,11 +136,13 @@
   var PREVIEW_SIZE = 256;
   var MIN_SIZE = 16;
   var MAX_SIZE = 1024;
-  var FAMILY_NAMES = ['plain', 'shapes', 'rings', 'stripes'];
+  var FAMILY_NAMES = ['plain', 'shapes', 'rings', 'stripes', 'pixels', 'mirror',
+                      'waves', 'rays', 'blocks', 'dots', 'checker', 'spiral', 'blobs'];
 
   var preview = document.getElementById('preview');
   var familySelect = document.getElementById('familySelect');
   var sizeInput = document.getElementById('sizeInput');
+  var letterInput = document.getElementById('letterInput');
   var regenBtn = document.getElementById('regenBtn');
   var downloadBtn = document.getElementById('downloadBtn');
   var seedLink = document.getElementById('seedLink');
@@ -140,16 +164,28 @@
     return buf[0];
   }
 
+  // Hash format: seed[.family][.letter]. Family is 0-FAMILY_NAMES.length-1
+  // (one or two digits), letter is a single alphanumeric char. Part-wise
+  // parsing so "seed..c" (letter, random family) works too.
   function seedFromHash() {
-    var h = (location.hash || '').replace(/^#/, '');
-    var m = /^([0-9a-f]{1,8})(?:\.([0-3]))?$/i.exec(h);
-    if (!m) return null;
-    return { seed: parseInt(m[1], 16) >>> 0,
-             family: m[2] === undefined ? null : parseInt(m[2], 10) };
+    var parts = (location.hash || '').replace(/^#/, '').toLowerCase().split('.');
+    if (parts.length > 3 || !/^[0-9a-f]{1,8}$/.test(parts[0])) return null;
+    var res = { seed: parseInt(parts[0], 16) >>> 0, family: null, letter: '' };
+    if (parts.length > 1 && parts[1] !== '') {
+      if (!/^\d{1,2}$/.test(parts[1])) return null;
+      var fam = parseInt(parts[1], 10);
+      if (fam >= FAMILY_NAMES.length) return null;
+      res.family = fam;
+    }
+    if (parts.length > 2 && parts[2] !== '') {
+      if (!/^[a-z0-9]$/.test(parts[2])) return null;
+      res.letter = parts[2];
+    }
+    return res;
   }
 
   // --- Drawing ---
-  function drawAvatar(ctx, size, rand, forced) {
+  function drawAvatar(ctx, size, rand, forced, letter) {
     // Two random anchor points on the square (linear gradient anchors).
     var x1 = rand() * size, y1 = rand() * size;
     var x2 = rand() * size, y2 = rand() * size;
@@ -161,11 +197,16 @@
     }
 
     // Random hues, pinned saturation/lightness bands for distinct, pleasant colors.
-    function makeColor() {
+    // An optional alpha argument yields an hsla() color instead of hsl().
+    function makeColor(alpha) {
       var hue = Math.floor(rand() * 360);
       var sat = 60 + rand() * 30;   // 60-90%
       var lig = 40 + rand() * 30;   // 40-70%
-      return 'hsl(' + hue + ', ' + sat.toFixed(1) + '%, ' + lig.toFixed(1) + '%)';
+      if (alpha === undefined) {
+        return 'hsl(' + hue + ', ' + sat.toFixed(1) + '%, ' + lig.toFixed(1) + '%)';
+      }
+      return 'hsla(' + hue + ', ' + sat.toFixed(1) + '%, ' + lig.toFixed(1) +
+             '%, ' + alpha + ')';
     }
 
     var grad = ctx.createLinearGradient(x1, y1, x2, y2);
@@ -174,9 +215,9 @@
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, size, size);
 
-    // --- Style family layer. The family roll happens AFTER all gradient
-    // draws, so existing shared hashes keep rendering the same base
-    // gradient. Fixed draw order: gradient first, then one family layer. ---
+    // The family roll happens AFTER all gradient draws, so existing shared
+    // hashes keep rendering the same base gradient. Fixed draw order:
+    // gradient first, then one family layer, then the optional letter.
     var family = Math.floor(rand() * FAMILY_NAMES.length);
     // A forced family (from the Pattern selector) replaces the rolled one,
     // but the roll is still consumed, so the base gradient of a seed never
@@ -185,6 +226,16 @@
     if (family === 1) drawShapes(ctx, size, rand, makeColor);
     else if (family === 2) drawRings(ctx, size, rand, makeColor, x1, y1);
     else if (family === 3) drawStripes(ctx, size, rand, makeColor);
+    else if (family === 4) drawPixels(ctx, size, rand, makeColor);
+    else if (family === 5) drawMirror(ctx, size, rand, makeColor);
+    else if (family === 6) drawWaves(ctx, size, rand, makeColor);
+    else if (family === 7) drawRays(ctx, size, rand, makeColor, x1, y1);
+    else if (family === 8) drawBlocks(ctx, size, rand, makeColor);
+    else if (family === 9) drawDots(ctx, size, rand, makeColor);
+    else if (family === 10) drawChecker(ctx, size, rand, makeColor);
+    else if (family === 11) drawSpiral(ctx, size, rand, makeColor, x2, y2);
+    else if (family === 12) drawBlobs(ctx, size, rand, makeColor);
+    if (letter) drawLetter(ctx, size, rand, makeColor, letter);
     return family;
   }
 
@@ -249,27 +300,258 @@
     ctx.restore();
   }
 
+  // Random-filled cells on a coarse grid: blocky, reads well even at 16px.
+  function drawPixels(ctx, size, rand, makeColor) {
+    var n = 4 + Math.floor(rand() * 5);          // 4-8 cells per row
+    var cell = size / n;
+    for (var y = 0; y < n; y++) {
+      for (var x = 0; x < n; x++) {
+        if (rand() < 0.45) continue;             // ~45% of cells stay clear
+        ctx.save();
+        ctx.globalAlpha = 0.5 + rand() * 0.3;
+        ctx.fillStyle = makeColor();
+        ctx.fillRect(x * cell, y * cell, cell, cell);
+        ctx.restore();
+      }
+    }
+  }
+
+  // GitHub-style identicon: 5x5 cells mirrored left-right, sometimes also
+  // top-bottom. Symmetry makes it read as a deliberate mark.
+  function drawMirror(ctx, size, rand, makeColor) {
+    var n = 5;
+    var cell = size / n;
+    var both = rand() < 0.5;                     // true: mirror top-bottom too
+    ctx.save();
+    ctx.globalAlpha = 0.7 + rand() * 0.25;
+    ctx.fillStyle = makeColor();
+    for (var y = 0; y < (both ? (n + 1) / 2 : n); y++) {
+      for (var x = 0; x < (n + 1) / 2; x++) {
+        if (rand() < 0.5) continue;              // ~50% of half-cells filled
+        ctx.fillRect(x * cell, y * cell, cell, cell);
+        ctx.fillRect((n - 1 - x) * cell, y * cell, cell, cell);
+        if (both && y < Math.floor(n / 2)) {
+          ctx.fillRect(x * cell, (n - 1 - y) * cell, cell, cell);
+          ctx.fillRect((n - 1 - x) * cell, (n - 1 - y) * cell, cell, cell);
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  // 2-4 semi-transparent sinusoidal bands at a random angle across the square.
+  function drawWaves(ctx, size, rand, makeColor) {
+    var bands = 2 + Math.floor(rand() * 3);      // 2-4 wave lines
+    var angle = rand() * Math.PI;
+    var amp = size * (0.05 + rand() * 0.12);     // wave height
+    var waves = 1 + rand() * 2;                  // 1-3 full waves across
+    var phase = rand() * Math.PI * 2;
+    var thick = size * (0.08 + rand() * 0.12);
+    if (thick < size / 10) thick = size / 10;    // visible at 16px
+    var span = size * 2;                         // covers the square when rotated
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.strokeStyle = makeColor();
+    ctx.lineWidth = thick;
+    ctx.translate(size / 2, size / 2);
+    ctx.rotate(angle);
+    for (var i = 0; i < bands; i++) {
+      var offset = (i - (bands - 1) / 2) * size * 0.28;
+      ctx.beginPath();
+      for (var t = 0; t <= 1.001; t += 0.02) {
+        var px = -span / 2 + t * span;
+        var py = offset + amp * Math.sin(phase + t * waves * Math.PI * 2);
+        if (t === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Sunburst: alternating pie wedges radiating from one gradient anchor.
+  function drawRays(ctx, size, rand, makeColor, cx, cy) {
+    var wedges = 6 + Math.floor(rand() * 9);     // 6-14 wedges
+    var start = rand() * Math.PI * 2;
+    ctx.save();
+    ctx.globalAlpha = 0.3 + rand() * 0.25;
+    ctx.fillStyle = makeColor();
+    var reach = size * 1.5;                      // reaches every corner
+    for (var i = 0; i < wedges; i += 2) {
+      var a0 = start + i * (Math.PI * 2 / wedges);
+      var a1 = a0 + Math.PI * 2 / wedges;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, reach, a0, a1);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // Mondrian: recursively split the square into 3-6 solid rectangles.
+  function drawBlocks(ctx, size, rand, makeColor) {
+    var splits = 2 + Math.floor(rand() * 4);     // 2-5 splits -> 3-6 rects
+    var rects = [{ x: 0, y: 0, w: size, h: size }];
+    for (var i = 0; i < splits; i++) {
+      var r = rects.splice(Math.floor(rand() * rects.length), 1)[0];
+      var frac = 0.3 + rand() * 0.4;             // avoid hairline slivers
+      // Split direction is random, not longest-side: alternating cuts are
+      // what make this read as Mondrian blocks instead of stripes.
+      var horizontal = rand() < 0.5;
+      if (horizontal) {
+        rects.push({ x: r.x, y: r.y, w: r.w, h: r.h * frac },
+                   { x: r.x, y: r.y + r.h * frac, w: r.w, h: r.h * (1 - frac) });
+      } else {
+        rects.push({ x: r.x, y: r.y, w: r.w * frac, h: r.h },
+                   { x: r.x + r.w * frac, y: r.y, w: r.w * (1 - frac), h: r.h });
+      }
+    }
+    ctx.save();
+    ctx.globalAlpha = 0.45;
+    var pad = size * 0.01;                       // seam shows the gradient
+    for (var j = 0; j < rects.length; j++) {
+      if (rand() < 0.25) continue;               // some rects stay clear
+      ctx.fillStyle = makeColor();
+      ctx.fillRect(rects[j].x + pad, rects[j].y + pad,
+                   rects[j].w - 2 * pad, rects[j].h - 2 * pad);
+    }
+    ctx.restore();
+  }
+
+  // Scattered semi-transparent polka dots over the gradient.
+  function drawDots(ctx, size, rand, makeColor) {
+    var count = 6 + Math.floor(rand() * 9);      // 6-14 dots
+    for (var i = 0; i < count; i++) {
+      var r = size * (0.06 + rand() * 0.12);
+      if (r < size / 10) r = size / 10;          // visible at 16px
+      var cx = rand() * size, cy = rand() * size;
+      ctx.save();
+      ctx.globalAlpha = 0.45 + rand() * 0.25;
+      ctx.fillStyle = makeColor();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // Rotated translucent checkerboard laid over the gradient.
+  function drawChecker(ctx, size, rand, makeColor) {
+    var cells = 3 + Math.floor(rand() * 4);      // 3-6 cells per row
+    var angle = rand() * Math.PI / 2;
+    var span = size * 2;                         // covers the square when rotated
+    var step = span / (cells * 2);
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = makeColor();
+    ctx.translate(size / 2, size / 2);
+    ctx.rotate(angle);
+    for (var y = 0; y < cells * 2; y++) {
+      for (var x = 0; x < cells * 2; x++) {
+        if ((x + y) % 2 === 0) continue;         // fill every other cell
+        ctx.fillRect(-span / 2 + x * step, -span / 2 + y * step, step, step);
+      }
+    }
+    ctx.restore();
+  }
+
+  // Archimedean spiral stroke centered on one of the gradient anchors.
+  function drawSpiral(ctx, size, rand, makeColor, cx, cy) {
+    var turns = 2 + rand() * 2;                  // 2-4 turns
+    var lineWidth = size * (0.06 + rand() * 0.08);
+    if (lineWidth < size / 12) lineWidth = size / 12;  // visible at 16px
+    var reach = size * (0.7 + rand() * 0.5);
+    var phase = rand() * Math.PI * 2;
+    ctx.save();
+    ctx.globalAlpha = 0.6;
+    ctx.strokeStyle = makeColor();
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    var steps = 200;
+    for (var i = 0; i <= steps; i++) {
+      var t = i / steps;
+      var a = phase + t * turns * Math.PI * 2;
+      var px = cx + t * reach * Math.cos(a);
+      var py = cy + t * reach * Math.sin(a);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Soft radial-gradient blobs floating over the gradient.
+  function drawBlobs(ctx, size, rand, makeColor) {
+    var count = 3 + Math.floor(rand() * 4);      // 3-6 blobs
+    for (var i = 0; i < count; i++) {
+      var r = size * (0.18 + rand() * 0.25);
+      var cx = rand() * size, cy = rand() * size;
+      var blob = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+      blob.addColorStop(0, makeColor(0.7));
+      blob.addColorStop(1, makeColor(0));        // same hue fading out
+      ctx.fillStyle = blob;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Optional letter overlay, drawn last over everything else: one glyph at
+  // a random spot with a random size, tilt, and color (plus a dark stroke
+  // so it reads on any background). Consumes rand() only when a letter is
+  // set, so toggling it never changes the base gradient or pattern.
+  function drawLetter(ctx, size, rand, makeColor, letter) {
+    var glyph = letter.toUpperCase();
+    var fontSize = size * (0.5 + rand() * 0.25);
+    var cx = size * (0.3 + rand() * 0.4);        // keeps the glyph inside
+    var cy = size * (0.3 + rand() * 0.4);
+    var angle = (rand() - 0.5) * Math.PI / 4.5;  // tilt within +/-20 degrees
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+    ctx.font = 'bold ' + fontSize.toFixed(1) + 'px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = makeColor();
+    ctx.lineWidth = Math.max(size / 24, fontSize * 0.06);
+    ctx.strokeStyle = 'rgba(16, 16, 24, 0.55)';
+    ctx.strokeText(glyph, 0, 0);
+    ctx.fillText(glyph, 0, 0);
+    ctx.restore();
+  }
+
   // --- State ---
   var parsed = seedFromHash();
   var currentSeed = parsed ? parsed.seed : randomSeed();
   if (parsed && parsed.family !== null) familySelect.value = FAMILY_NAMES[parsed.family];
+  if (parsed) letterInput.value = parsed.letter.toUpperCase();
 
   function forcedFamily() {
     var v = familySelect.value;
     return v === 'random' ? null : FAMILY_NAMES.indexOf(v);
   }
 
-  function hashFor(seed, forced) {
-    return (seed >>> 0).toString(16) + (forced === null ? '' : '.' + forced);
+  function currentLetter() {
+    var c = letterInput.value.charAt(0);
+    return /[a-zA-Z0-9]/.test(c) ? c : '';
+  }
+
+  function hashFor(seed, forced, letter) {
+    var h = (seed >>> 0).toString(16);
+    if (forced !== null) h += '.' + forced;
+    if (letter) h += (forced === null ? '..' : '.') + letter.toLowerCase();
+    return h;
   }
 
   function render() {
     var forced = forcedFamily();
+    var letter = currentLetter();
     var rand = mulberry32(currentSeed);
-    var family = drawAvatar(preview.getContext('2d'), PREVIEW_SIZE, rand, forced);
-    location.hash = hashFor(currentSeed, forced);
+    var family = drawAvatar(preview.getContext('2d'), PREVIEW_SIZE, rand, forced, letter);
+    location.hash = hashFor(currentSeed, forced, letter);
     var url = location.href;
     seedLink.innerHTML = 'Style: ' + FAMILY_NAMES[family] +
+      (letter ? ' + ' + letter.toUpperCase() : '') +
       ' &middot; Share this avatar: <a href="' + url + '">' + url + '</a>';
   }
 
@@ -284,6 +566,12 @@
   // --- Actions ---
   familySelect.addEventListener('change', render);
 
+  letterInput.addEventListener('input', function () {
+    var c = currentLetter().toUpperCase();
+    if (letterInput.value !== c) letterInput.value = c;   // sanitize as typed
+    render();
+  });
+
   regenBtn.addEventListener('click', function () {
     currentSeed = randomSeed();
     render();
@@ -294,7 +582,8 @@
     var canvas = document.createElement('canvas');
     canvas.width = size;
     canvas.height = size;
-    drawAvatar(canvas.getContext('2d'), size, mulberry32(currentSeed), forcedFamily());
+    drawAvatar(canvas.getContext('2d'), size, mulberry32(currentSeed), forcedFamily(),
+               currentLetter());
     canvas.toBlob(function (blob) {
       if (!blob) return;
       var a = document.createElement('a');
@@ -312,9 +601,11 @@
     var p = seedFromHash();
     if (!p) return;
     var famName = p.family === null ? 'random' : FAMILY_NAMES[p.family];
-    if (p.seed === currentSeed && familySelect.value === famName) return;
+    if (p.seed === currentSeed && familySelect.value === famName &&
+        p.letter === currentLetter().toLowerCase()) return;
     currentSeed = p.seed;
     familySelect.value = famName;
+    letterInput.value = p.letter.toUpperCase();
     render();
   });
 
