@@ -69,6 +69,14 @@
     cursor: pointer;
   }
   button:hover { filter: brightness(1.15); }
+  select {
+    padding: 0.45rem 0.5rem;
+    border-radius: 8px;
+    border: 1px solid #44445c;
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 0.95rem;
+  }
   #seedLink {
     font-size: 0.8rem;
     color: #9a9ab5;
@@ -84,6 +92,14 @@
   <h1>Random Avatar Icon</h1>
   <canvas id="preview" width="256" height="256" aria-label="Random gradient avatar preview"></canvas>
   <div class="controls">
+    <label for="familySelect">Pattern:</label>
+    <select id="familySelect">
+      <option value="random" selected>Random</option>
+      <option value="plain">Plain</option>
+      <option value="shapes">Shapes</option>
+      <option value="rings">Rings</option>
+      <option value="stripes">Stripes</option>
+    </select>
     <label for="sizeInput">Download size (px):</label>
     <input type="number" id="sizeInput" min="16" max="1024" step="1" value="256">
     <button id="regenBtn" type="button">Regenerate</button>
@@ -98,8 +114,10 @@
   var PREVIEW_SIZE = 256;
   var MIN_SIZE = 16;
   var MAX_SIZE = 1024;
+  var FAMILY_NAMES = ['plain', 'shapes', 'rings', 'stripes'];
 
   var preview = document.getElementById('preview');
+  var familySelect = document.getElementById('familySelect');
   var sizeInput = document.getElementById('sizeInput');
   var regenBtn = document.getElementById('regenBtn');
   var downloadBtn = document.getElementById('downloadBtn');
@@ -124,12 +142,14 @@
 
   function seedFromHash() {
     var h = (location.hash || '').replace(/^#/, '');
-    if (!/^[0-9a-f]{1,8}$/i.test(h)) return null;
-    return parseInt(h, 16) >>> 0;
+    var m = /^([0-9a-f]{1,8})(?:\.([0-3]))?$/i.exec(h);
+    if (!m) return null;
+    return { seed: parseInt(m[1], 16) >>> 0,
+             family: m[2] === undefined ? null : parseInt(m[2], 10) };
   }
 
   // --- Drawing ---
-  function drawAvatar(ctx, size, rand) {
+  function drawAvatar(ctx, size, rand, forced) {
     // Two random anchor points on the square (linear gradient anchors).
     var x1 = rand() * size, y1 = rand() * size;
     var x2 = rand() * size, y2 = rand() * size;
@@ -153,18 +173,104 @@
     grad.addColorStop(1, makeColor());
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, size, size);
+
+    // --- Style family layer. The family roll happens AFTER all gradient
+    // draws, so existing shared hashes keep rendering the same base
+    // gradient. Fixed draw order: gradient first, then one family layer. ---
+    var family = Math.floor(rand() * FAMILY_NAMES.length);
+    // A forced family (from the Pattern selector) replaces the rolled one,
+    // but the roll is still consumed, so the base gradient of a seed never
+    // changes when the user switches patterns.
+    if (forced !== null && forced !== undefined) family = forced;
+    if (family === 1) drawShapes(ctx, size, rand, makeColor);
+    else if (family === 2) drawRings(ctx, size, rand, makeColor, x1, y1);
+    else if (family === 3) drawStripes(ctx, size, rand, makeColor);
+    return family;
+  }
+
+  // 1-3 geometric accents (circle / square / triangle) on the gradient.
+  function drawShapes(ctx, size, rand, makeColor) {
+    var count = 1 + Math.floor(rand() * 3);
+    for (var i = 0; i < count; i++) {
+      var kind = Math.floor(rand() * 3);
+      var d = size * (0.25 + rand() * 0.45);  // min 25% so shapes read at 16px
+      var cx = rand() * size, cy = rand() * size;
+      var angle = rand() * Math.PI * 2;
+      ctx.save();
+      ctx.globalAlpha = 0.75;
+      ctx.fillStyle = makeColor();
+      ctx.translate(cx, cy);
+      ctx.rotate(angle);
+      ctx.beginPath();
+      if (kind === 0) {
+        ctx.arc(0, 0, d / 2, 0, Math.PI * 2);
+      } else if (kind === 1) {
+        ctx.rect(-d / 2, -d / 2, d, d);
+      } else {
+        ctx.moveTo(0, -d / 2);
+        ctx.lineTo(d / 2, d / 2);
+        ctx.lineTo(-d / 2, d / 2);
+        ctx.closePath();
+      }
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // 2-4 concentric rings centered on one of the gradient anchors.
+  function drawRings(ctx, size, rand, makeColor, cx, cy) {
+    var count = 2 + Math.floor(rand() * 3);
+    var lineWidth = size * (0.06 + rand() * 0.08);
+    if (lineWidth < size / 10) lineWidth = size / 10;  // visible at 16px
+    ctx.lineWidth = lineWidth;
+    for (var i = 0; i < count; i++) {
+      ctx.strokeStyle = makeColor();
+      ctx.beginPath();
+      ctx.arc(cx, cy, (i + 1) * size * 0.22, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  // Diagonal semi-transparent bands at a random angle across the gradient.
+  function drawStripes(ctx, size, rand, makeColor) {
+    var bands = 3 + Math.floor(rand() * 5);    // 3-7 bands
+    var angle = rand() * Math.PI;
+    var color = makeColor();
+    var span = size * 2;                       // covers the square when rotated
+    var step = span / bands;
+    ctx.save();
+    ctx.globalAlpha = 0.45;
+    ctx.fillStyle = color;
+    ctx.translate(size / 2, size / 2);
+    ctx.rotate(angle);
+    for (var i = 0; i < bands; i += 2) {
+      ctx.fillRect(-span / 2 + i * step, -span / 2, step, span);
+    }
+    ctx.restore();
   }
 
   // --- State ---
-  var currentSeed = seedFromHash();
-  if (currentSeed === null) currentSeed = randomSeed();
+  var parsed = seedFromHash();
+  var currentSeed = parsed ? parsed.seed : randomSeed();
+  if (parsed && parsed.family !== null) familySelect.value = FAMILY_NAMES[parsed.family];
+
+  function forcedFamily() {
+    var v = familySelect.value;
+    return v === 'random' ? null : FAMILY_NAMES.indexOf(v);
+  }
+
+  function hashFor(seed, forced) {
+    return (seed >>> 0).toString(16) + (forced === null ? '' : '.' + forced);
+  }
 
   function render() {
+    var forced = forcedFamily();
     var rand = mulberry32(currentSeed);
-    drawAvatar(preview.getContext('2d'), PREVIEW_SIZE, rand);
-    location.hash = (currentSeed >>> 0).toString(16);
+    var family = drawAvatar(preview.getContext('2d'), PREVIEW_SIZE, rand, forced);
+    location.hash = hashFor(currentSeed, forced);
     var url = location.href;
-    seedLink.innerHTML = 'Share this avatar: <a href="' + url + '">' + url + '</a>';
+    seedLink.innerHTML = 'Style: ' + FAMILY_NAMES[family] +
+      ' &middot; Share this avatar: <a href="' + url + '">' + url + '</a>';
   }
 
   function clampSize() {
@@ -176,6 +282,8 @@
   }
 
   // --- Actions ---
+  familySelect.addEventListener('change', render);
+
   regenBtn.addEventListener('click', function () {
     currentSeed = randomSeed();
     render();
@@ -186,7 +294,7 @@
     var canvas = document.createElement('canvas');
     canvas.width = size;
     canvas.height = size;
-    drawAvatar(canvas.getContext('2d'), size, mulberry32(currentSeed));
+    drawAvatar(canvas.getContext('2d'), size, mulberry32(currentSeed), forcedFamily());
     canvas.toBlob(function (blob) {
       if (!blob) return;
       var a = document.createElement('a');
@@ -201,11 +309,13 @@
   });
 
   window.addEventListener('hashchange', function () {
-    var s = seedFromHash();
-    if (s !== null && s !== currentSeed) {
-      currentSeed = s;
-      render();
-    }
+    var p = seedFromHash();
+    if (!p) return;
+    var famName = p.family === null ? 'random' : FAMILY_NAMES[p.family];
+    if (p.seed === currentSeed && familySelect.value === famName) return;
+    currentSeed = p.seed;
+    familySelect.value = famName;
+    render();
   });
 
   render();
