@@ -1,0 +1,4 @@
+Do not do any commits.  I do those.  Don't edit the README, but you can add notes in this file.
+
+This is a file designed to make random avatar icons via the web.  It should have an index.html file which will later be deployed by Github Pages.  It will show a square with a color gradient anchored at two random points on the square.  There is a numeric input to choose the downloaded PNG size (16 to 1024 pixels square; the on-screen preview stays a fixed comfortable size), and a button to re-do the random generation.  The random seed is kept in the URL hash so a specific avatar can be shared or bookmarked.  There is an option to download the visible image as a PNG.  This is used to make random distinct avatar icons for profiles, etc.
+
