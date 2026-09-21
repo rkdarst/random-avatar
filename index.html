@@ -266,7 +266,7 @@
     function makeColor(alpha) {
       var hue = Math.floor(rand() * 360);
       var sat = 60 + rand() * 30;   // 60-90%
-      var lig = 40 + rand() * 30;   // 40-70%
+      var lig = 10 + rand() * 80;   // 40-70%
       if (alpha === undefined) {
         return 'hsl(' + hue + ', ' + sat.toFixed(1) + '%, ' + lig.toFixed(1) + '%)';
       }
