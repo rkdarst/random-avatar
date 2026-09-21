@@ -97,6 +97,41 @@
     margin: 0;
   }
   #seedLink a { color: var(--accent); }
+  .history {
+    width: 100%;
+    max-width: 34rem;
+    background: var(--panel);
+    border-radius: 12px;
+    padding: 0.75rem 1rem 1rem;
+  }
+  .history-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.6rem;
+  }
+  .history h2 { font-size: 1rem; font-weight: 600; margin: 0; color: #9a9ab5; }
+  button.secondary {
+    background: #4a4a68;
+    font-size: 0.8rem;
+    padding: 0.3rem 0.7rem;
+  }
+  #historyGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+    gap: 0.5rem;
+  }
+  #historyGrid canvas {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 8px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    display: block;
+  }
+  #historyGrid canvas:hover { border-color: var(--accent); }
+  #historyGrid canvas.active { border-color: #6bd968; }
+  .history .hint { color: #6a6a88; font-size: 0.85rem; margin: 0.25rem 0 0; }
 </style>
 </head>
 <body>
@@ -122,12 +157,20 @@
     </select>
     <label for="sizeInput">Download size (px):</label>
     <input type="number" id="sizeInput" min="16" max="1024" step="1" value="256">
-    <label for="letterInput" title="Optional single character drawn on top">Letter:</label>
-    <input type="text" id="letterInput" maxlength="1" autocomplete="off" spellcheck="false">
+    <label for="letterInput" title="Optional single character drawn on top (any character)">Letter:</label>
+    <input type="text" id="letterInput" maxlength="2" autocomplete="off" spellcheck="false">
     <button id="regenBtn" type="button">Regenerate</button>
     <button id="downloadBtn" type="button">Download PNG</button>
   </div>
   <p id="seedLink"></p>
+  <div class="history">
+    <div class="history-head">
+      <h2>History</h2>
+      <button id="clearHistoryBtn" type="button" class="secondary">Clear</button>
+    </div>
+    <div id="historyGrid"></div>
+    <p id="historyEmpty" class="hint">Avatars you generate will appear here &mdash; click one to bring it back.</p>
+  </div>
 
 <script>
 (function () {
@@ -146,6 +189,9 @@
   var regenBtn = document.getElementById('regenBtn');
   var downloadBtn = document.getElementById('downloadBtn');
   var seedLink = document.getElementById('seedLink');
+  var historyGrid = document.getElementById('historyGrid');
+  var historyEmpty = document.getElementById('historyEmpty');
+  var clearHistoryBtn = document.getElementById('clearHistoryBtn');
 
   // --- Seeded RNG (mulberry32) so avatars are reproducible via URL hash ---
   function mulberry32(seed) {
@@ -165,23 +211,42 @@
   }
 
   // Hash format: seed[.family][.letter]. Family is 0-FAMILY_NAMES.length-1
-  // (one or two digits), letter is a single alphanumeric char. Part-wise
-  // parsing so "seed..c" (letter, random family) works too.
-  function seedFromHash() {
-    var parts = (location.hash || '').replace(/^#/, '').toLowerCase().split('.');
-    if (parts.length > 3 || !/^[0-9a-f]{1,8}$/.test(parts[0])) return null;
+  // (one or two digits). The letter is any single character: alphanumerics
+  // are stored lowercased (as in old links), everything else URL-encoded
+  // ("." itself is stored as %2E so it cannot clash with the separators).
+  // "seed..c" means a letter with a random family. Returns null if invalid.
+  function decodeLetterPart(part) {
+    var s;
+    try { s = decodeURIComponent(part); } catch (e) { return null; }
+    var c = Array.from(s)[0];
+    return (c !== undefined && c.trim() !== '') ? c : null;
+  }
+
+  function parseHashStr(str) {
+    var parts = (str || '').replace(/^#/, '').split('.');
+    if (parts.length > 3 || !/^[0-9a-fA-F]{1,8}$/.test(parts[0])) return null;
     var res = { seed: parseInt(parts[0], 16) >>> 0, family: null, letter: '' };
     if (parts.length > 1 && parts[1] !== '') {
-      if (!/^\d{1,2}$/.test(parts[1])) return null;
-      var fam = parseInt(parts[1], 10);
-      if (fam >= FAMILY_NAMES.length) return null;
-      res.family = fam;
+      if (/^\d{1,2}$/.test(parts[1])) {
+        var fam = parseInt(parts[1], 10);
+        if (fam >= FAMILY_NAMES.length) return null;
+        res.family = fam;
+      } else {                       // non-numeric second part: an encoded letter
+        var c1 = decodeLetterPart(parts[1]);
+        if (c1 === null) return null;
+        res.letter = c1;
+      }
     }
     if (parts.length > 2 && parts[2] !== '') {
-      if (!/^[a-z0-9]$/.test(parts[2])) return null;
-      res.letter = parts[2];
+      var c2 = decodeLetterPart(parts[2]);
+      if (c2 === null) return null;
+      res.letter = c2;
     }
     return res;
+  }
+
+  function seedFromHash() {
+    return parseHashStr(location.hash);
   }
 
   // --- Drawing ---
@@ -532,14 +597,24 @@
   }
 
   function currentLetter() {
-    var c = letterInput.value.charAt(0);
-    return /[a-zA-Z0-9]/.test(c) ? c : '';
+    // First character of the input; any character except whitespace counts.
+    // Array.from splits per code point, so astral chars (emoji) count as one.
+    var c = Array.from(letterInput.value)[0];
+    return (c !== undefined && c.trim() !== '') ? c : '';
+  }
+
+  // Letters/digits stay lowercase in the hash (old-link compatible); any
+  // other character is URL-encoded, and "." becomes "%2E" so it cannot be
+  // mistaken for a part separator.
+  function encodeLetter(c) {
+    if (/[a-zA-Z0-9]/.test(c)) return c.toLowerCase();
+    return encodeURIComponent(c).replace(/\./g, '%2E');
   }
 
   function hashFor(seed, forced, letter) {
     var h = (seed >>> 0).toString(16);
     if (forced !== null) h += '.' + forced;
-    if (letter) h += (forced === null ? '..' : '.') + letter.toLowerCase();
+    if (letter) h += (forced === null ? '..' : '.') + encodeLetter(letter);
     return h;
   }
 
@@ -553,6 +628,7 @@
     seedLink.innerHTML = 'Style: ' + FAMILY_NAMES[family] +
       (letter ? ' + ' + letter.toUpperCase() : '') +
       ' &middot; Share this avatar: <a href="' + url + '">' + url + '</a>';
+    recordHistory();
   }
 
   function clampSize() {
@@ -563,12 +639,79 @@
     return n;
   }
 
+  // --- History: remember recently generated avatars (persisted in
+  // localStorage as hash strings; thumbnails are re-drawn from the seed).
+  var HISTORY_KEY = 'avatarHistoryV1';
+  var MAX_HISTORY = 60;
+  var THUMB_DRAW = 96;
+  var historyList = loadHistory();
+  var historyRendered = [];
+
+  function loadHistory() {
+    var arr = [];
+    try {
+      arr = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+    } catch (e) { return []; }
+    if (Object.prototype.toString.call(arr) !== '[object Array]') return [];
+    return arr.filter(function (h) {
+      return typeof h === 'string' && parseHashStr(h) !== null;
+    });
+  }
+
+  function saveHistory() {
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(historyList)); }
+    catch (e) { /* storage unavailable: keep the in-memory list only */ }
+  }
+
+  function recordHistory() {
+    var h = (location.hash || '').replace(/^#/, '');
+    if (h && historyList.indexOf(h) === -1) {
+      historyList.unshift(h);
+      if (historyList.length > MAX_HISTORY) historyList.length = MAX_HISTORY;
+      saveHistory();
+      renderHistory();
+    } else {
+      highlightHistory();
+    }
+  }
+
+  function makeThumb(h) {
+    var p = parseHashStr(h);
+    var c = document.createElement('canvas');
+    c.width = THUMB_DRAW;
+    c.height = THUMB_DRAW;
+    c.title = '#' + h;
+    drawAvatar(c.getContext('2d'), THUMB_DRAW, mulberry32(p.seed),
+               p.family, p.letter);
+    c.addEventListener('click', function () { location.hash = h; });
+    return c;
+  }
+
+  function renderHistory() {
+    while (historyGrid.firstChild) historyGrid.removeChild(historyGrid.firstChild);
+    historyRendered = historyList.filter(function (h) {
+      return parseHashStr(h) !== null;
+    });
+    for (var i = 0; i < historyRendered.length; i++) {
+      historyGrid.appendChild(makeThumb(historyRendered[i]));
+    }
+    historyEmpty.style.display = historyRendered.length ? 'none' : 'block';
+    highlightHistory();
+  }
+
+  function highlightHistory() {
+    var cur = (location.hash || '').replace(/^#/, '');
+    var kids = historyGrid.children || [];
+    for (var i = 0; i < kids.length; i++) {
+      kids[i].className = (i < historyRendered.length &&
+                           historyRendered[i] === cur) ? 'thumb active' : 'thumb';
+    }
+  }
+
   // --- Actions ---
   familySelect.addEventListener('change', render);
 
   letterInput.addEventListener('input', function () {
-    var c = currentLetter().toUpperCase();
-    if (letterInput.value !== c) letterInput.value = c;   // sanitize as typed
     render();
   });
 
@@ -588,8 +731,10 @@
       if (!blob) return;
       var a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
+      // hashFor() output is filename-safe: hex/family parts are plain, and
+      // any odd letter character is percent-encoded (no "/" or "?").
       a.download = 'avatar-' + size + 'x' + size + '-' +
-                   (currentSeed >>> 0).toString(16) + '.png';
+                   hashFor(currentSeed, forcedFamily(), currentLetter()) + '.png';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -597,12 +742,18 @@
     }, 'image/png');
   });
 
+  clearHistoryBtn.addEventListener('click', function () {
+    historyList = [];
+    saveHistory();
+    renderHistory();
+  });
+
   window.addEventListener('hashchange', function () {
     var p = seedFromHash();
     if (!p) return;
     var famName = p.family === null ? 'random' : FAMILY_NAMES[p.family];
     if (p.seed === currentSeed && familySelect.value === famName &&
-        p.letter === currentLetter().toLowerCase()) return;
+        p.letter.toUpperCase() === currentLetter().toUpperCase()) return;
     currentSeed = p.seed;
     familySelect.value = famName;
     letterInput.value = p.letter.toUpperCase();
