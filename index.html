@@ -250,7 +250,7 @@
   }
 
   // --- Drawing ---
-  function drawAvatar(ctx, size, rand, forced, letter) {
+  function drawAvatar(ctx, size, rand, forced, letter, seed) {
     // Two random anchor points on the square (linear gradient anchors).
     var x1 = rand() * size, y1 = rand() * size;
     var x2 = rand() * size, y2 = rand() * size;
@@ -261,22 +261,44 @@
       y2 = (y1 + size * 0.5) % size;
     }
 
-    // Random hues, pinned saturation/lightness bands for distinct, pleasant colors.
-    // An optional alpha argument yields an hsla() color instead of hsl().
+    // Two base hues form the palette for the whole avatar. Their relation
+    // comes from seed bits (zero RNG), so some avatars are near-monochrome
+    // and others colorful, but none becomes a rainbow. Exactly one rand()
+    // is consumed for hueB (as jitter or full randomness, matching the old
+    // random-hue draw), so pattern geometry of existing links never shifts.
+    var hueA = rand() * 360;
+    var satA = 60 + rand() * 30, ligA = 40 + rand() * 30;
+    var scheme = (seed >>> 17) & 3;
+    var hueB;
+    if (scheme === 0) hueB = hueA + 20 + rand() * 25;        // analogous
+    else if (scheme === 1) hueB = hueA + 150 + rand() * 30;  // split-complement
+    else if (scheme === 2) hueB = hueA + 160 + rand() * 40;  // complementary
+    else hueB = rand() * 360;                                // independent
+    var satB = 60 + rand() * 30, ligB = 40 + rand() * 30;
+
+    // Format an hsl()/hsla() string (alpha given yields hsla with alpha).
+    function fmt(h, s, l, alpha) {
+      h = Math.floor(((h % 360) + 360) % 360);
+      if (alpha === undefined) return 'hsl(' + h + ', ' + s + '%, ' + l + '%)';
+      return 'hsla(' + h + ', ' + s + '%, ' + l + '%, ' + alpha + ')';
+    }
+
+    // Every later color is one of the two base hues with a small jitter and
+    // a rare derived accent, so multi-element patterns stay coherent. Still
+    // exactly three rand() draws per call (the first picks the base and its
+    // fraction doubles as the jitter), keeping pattern geometry stable.
     function makeColor(alpha) {
-      var hue = Math.floor(rand() * 360);
-      var sat = 60 + rand() * 30;   // 60-90%
-      var lig = 10 + rand() * 80;   // 40-70%
-      if (alpha === undefined) {
-        return 'hsl(' + hue + ', ' + sat.toFixed(1) + '%, ' + lig.toFixed(1) + '%)';
-      }
-      return 'hsla(' + hue + ', ' + sat.toFixed(1) + '%, ' + lig.toFixed(1) +
-             '%, ' + alpha + ')';
+      var p = rand();
+      var hue = (p < 0.5 ? hueA : hueB) + (p % 0.5) * 60 - 15;  // +/-15 deg
+      if (p > 0.94) hue = hueB + 40;             // occasional derived accent
+      var sat = 60 + rand() * 30;                // 60-90%
+      var lig = 35 + rand() * 40;                // 35-75%, wider for contrast
+      return fmt(hue, sat.toFixed(1), lig.toFixed(1), alpha);
     }
 
     var grad = ctx.createLinearGradient(x1, y1, x2, y2);
-    grad.addColorStop(0, makeColor());
-    grad.addColorStop(1, makeColor());
+    grad.addColorStop(0, fmt(hueA, satA.toFixed(1), ligA.toFixed(1)));
+    grad.addColorStop(1, fmt(hueB, satB.toFixed(1), ligB.toFixed(1)));
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, size, size);
 
@@ -622,7 +644,8 @@
     var forced = forcedFamily();
     var letter = currentLetter();
     var rand = mulberry32(currentSeed);
-    var family = drawAvatar(preview.getContext('2d'), PREVIEW_SIZE, rand, forced, letter);
+    var family = drawAvatar(preview.getContext('2d'), PREVIEW_SIZE, rand,
+                            forced, letter, currentSeed);
     location.hash = hashFor(currentSeed, forced, letter);
     var url = location.href;
     seedLink.innerHTML = 'Style: ' + FAMILY_NAMES[family] +
@@ -682,7 +705,7 @@
     c.height = THUMB_DRAW;
     c.title = '#' + h;
     drawAvatar(c.getContext('2d'), THUMB_DRAW, mulberry32(p.seed),
-               p.family, p.letter);
+               p.family, p.letter, p.seed);
     c.addEventListener('click', function () { location.hash = h; });
     return c;
   }
@@ -725,8 +748,8 @@
     var canvas = document.createElement('canvas');
     canvas.width = size;
     canvas.height = size;
-    drawAvatar(canvas.getContext('2d'), size, mulberry32(currentSeed), forcedFamily(),
-               currentLetter());
+    drawAvatar(canvas.getContext('2d'), size, mulberry32(currentSeed),
+               forcedFamily(), currentLetter(), currentSeed);
     canvas.toBlob(function (blob) {
       if (!blob) return;
       var a = document.createElement('a');
