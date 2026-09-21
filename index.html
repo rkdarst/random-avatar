@@ -97,6 +97,14 @@
     margin: 0;
   }
   #seedLink a { color: var(--accent); }
+  .tagline {
+    font-size: 0.8rem;
+    color: #9a9ab5;
+    max-width: 32rem;
+    text-align: center;
+    line-height: 1.45;
+    margin: -0.5rem 0 0;
+  }
   .history {
     width: 100%;
     max-width: 34rem;
@@ -136,6 +144,7 @@
 </head>
 <body>
   <h1>Random Avatar Icon</h1>
+  <p class="tagline">Outputs are machine generated and thus CC-0.  Each individual generation is simple algorithms does not run an "AI" algorithm, though code is LLM generated.</p>
   <canvas id="preview" width="256" height="256" aria-label="Random gradient avatar preview"></canvas>
   <div class="controls">
     <label for="familySelect">Pattern:</label>
@@ -162,7 +171,6 @@
     <button id="regenBtn" type="button">Regenerate</button>
     <button id="downloadBtn" type="button">Download PNG</button>
   </div>
-  <p>Outputs are machine generated and thus CC-0.  Each individual generation is simple algorithms does not run an "AI" algorithm, though code is LLM generated.</p>
   <p id="seedLink"></p>
   <div class="history">
     <div class="history-head">
