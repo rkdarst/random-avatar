@@ -36,6 +36,8 @@
     border-radius: 12px;
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
     display: block;
+    /* Checkerboard shows through where the silhouette mask is transparent. */
+    background: repeating-conic-gradient(#3f3f5a 0% 25%, #33334c 0% 50%) 0 0 / 16px 16px;
   }
   .controls {
     display: flex;
@@ -133,6 +135,7 @@
     width: 100%;
     aspect-ratio: 1 / 1;
     border-radius: 8px;
+    background: repeating-conic-gradient(#3f3f5a 0% 25%, #33334c 0% 50%) 0 0 / 8px 8px;
     border: 2px solid transparent;
     cursor: pointer;
     display: block;
@@ -177,6 +180,19 @@
       <option value="earth">Earth</option>
       <option value="ocean">Ocean</option>
       <option value="mono">Mono</option>
+    </select>
+    <label for="shapeSelect" title="Silhouette mask; Random picks one from the seed (everything outside the shape is transparent)">Shape:</label>
+    <select id="shapeSelect">
+      <option value="random" selected>Random</option>
+      <option value="none">Square</option>
+      <option value="circle">Circle</option>
+      <option value="rounded">Rounded</option>
+      <option value="hexagon">Hexagon</option>
+      <option value="shield">Shield</option>
+      <option value="diamond">Diamond</option>
+      <option value="star">Star</option>
+      <option value="blob">Blob</option>
+      <option value="pill">Pill</option>
     </select>
     <label for="sizeInput">Download size (px):</label>
     <input type="number" id="sizeInput" min="16" max="1024" step="1" value="256">
@@ -238,9 +254,24 @@
     return [5, 6, 7, 8, 9, 5, 7, 0][b - 8];
   }
 
+  // Silhouette masks cut around every avatar after all layers are drawn
+  // (everything outside the shape becomes transparent). Seed bits 23-26
+  // pick one of the eight shapes with zero RNG, so pattern geometry and
+  // colors never shift, and bits 27-30 add a small rotation to the
+  // polygon-like ones. The Shape selector can force any entry; "none"
+  // (the full square) only comes from forcing. Append-only, like
+  // FAMILY_NAMES and TEMPERAMENT_NAMES.
+  var SHAPE_NAMES = ['none', 'circle', 'rounded', 'hexagon', 'shield',
+                     'diamond', 'star', 'blob', 'pill'];
+  function shapeFromSeed(seed, forcedS) {
+    if (forcedS !== null && forcedS !== undefined) return forcedS;
+    return 1 + ((seed >>> 23) & 7);
+  }
+
   var preview = document.getElementById('preview');
   var familySelect = document.getElementById('familySelect');
   var tempSelect = document.getElementById('tempSelect');
+  var shapeSelect = document.getElementById('shapeSelect');
   var sizeInput = document.getElementById('sizeInput');
   var letterInput = document.getElementById('letterInput');
   var regenBtn = document.getElementById('regenBtn');
@@ -267,9 +298,10 @@
     return buf[0];
   }
 
-  // Hash format: seed[.family][.letter][.temperament]. Family is
-  // 0-FAMILY_NAMES.length-1 (one or two digits), temperament is a single
-  // digit 0-TEMPERAMENT_NAMES.length-1. The letter is any single character:
+  // Hash format: seed[.family][.letter][.temperament][.shape]. Family is
+  // 0-FAMILY_NAMES.length-1 (one or two digits), temperament and shape are
+  // single digits 0-TEMPERAMENT_NAMES.length-1 / 0-SHAPE_NAMES.length-1.
+  // The letter is any single character:
   // alphanumerics are stored lowercased (as in old links), everything else
   // URL-encoded ("." itself is stored as %2E so it cannot clash with the
   // separators). "seed..c" means a letter with a random family. Returns
@@ -283,8 +315,8 @@
 
   function parseHashStr(str) {
     var parts = (str || '').replace(/^#/, '').split('.');
-    if (parts.length > 4 || !/^[0-9a-fA-F]{1,8}$/.test(parts[0])) return null;
-    var res = { seed: parseInt(parts[0], 16) >>> 0, family: null, letter: '', temp: null };
+    if (parts.length > 5 || !/^[0-9a-fA-F]{1,8}$/.test(parts[0])) return null;
+    var res = { seed: parseInt(parts[0], 16) >>> 0, family: null, letter: '', temp: null, shape: null };
     if (parts.length > 1 && parts[1] !== '') {
       if (/^\d{1,2}$/.test(parts[1])) {
         var fam = parseInt(parts[1], 10);
@@ -307,6 +339,12 @@
       if (t >= TEMPERAMENT_NAMES.length) return null;
       res.temp = t;
     }
+    if (parts.length > 4 && parts[4] !== '') {
+      if (!/^\d{1,2}$/.test(parts[4])) return null;
+      var sh = parseInt(parts[4], 10);
+      if (sh >= SHAPE_NAMES.length) return null;
+      res.shape = sh;
+    }
     return res;
   }
 
@@ -315,7 +353,7 @@
   }
 
   // --- Drawing ---
-  function drawAvatar(ctx, size, rand, forced, letter, seed, forcedT) {
+  function drawAvatar(ctx, size, rand, forced, letter, seed, forcedT, forcedS) {
     // Two random anchor points on the square (linear gradient anchors).
     var x1 = rand() * size, y1 = rand() * size;
     var x2 = rand() * size, y2 = rand() * size;
@@ -398,6 +436,19 @@
     else if (family === 11) drawSpiral(ctx, size, rand, makeColor, x2, y2);
     else if (family === 12) drawBlobs(ctx, size, rand, makeColor);
     if (letter) drawLetter(ctx, size, rand, makeColor, letter);
+    // The silhouette mask runs last so every layer, the letter included,
+    // clips into the shape. The shape comes from seed bits (zero RNG), so
+    // pattern geometry and colors are untouched; "none" keeps the square.
+    var shape = shapeFromSeed(seed, forcedS);
+    if (shape !== 0) {
+      var rot = ((seed >>> 27) & 15) * (Math.PI / 64);   // 0 to ~42 degrees
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.fillStyle = '#fff';
+      shapePath(ctx, size, shape, rot);
+      ctx.fill();
+      ctx.restore();
+    }
     return family;
   }
 
@@ -658,6 +709,70 @@
     }
   }
 
+  // Builds the silhouette path for shape id on a full-size square canvas.
+  // rot is the seed-derived rotation (radians) used by the polygon-like
+  // shapes; every coordinate is proportional to size so downloads at any
+  // resolution scale exactly. Consumes no rand() draws.
+  function shapePath(ctx, size, id, rot) {
+    var c = size / 2, r = size / 2;
+    // Regular n-gon inscribed in the square; with inner set, a 2n-point
+    // star alternating between the full and the 45% radius.
+    function polygon(n, star) {
+      var count = star ? n * 2 : n, step = Math.PI * 2 / count;
+      for (var i = 0; i < count; i++) {
+        var a = rot - Math.PI / 2 + i * step;
+        var rr = (star && i % 2) ? r * 0.45 : r;
+        var px = c + rr * Math.cos(a), py = c + rr * Math.sin(a);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+    }
+    ctx.beginPath();
+    if (id === 1) {                                 // circle
+      ctx.arc(c, c, r, 0, Math.PI * 2);
+    } else if (id === 2) {                          // squircle
+      var k = size * 0.3;
+      ctx.moveTo(k, 0);
+      ctx.lineTo(size - k, 0); ctx.quadraticCurveTo(size, 0, size, k);
+      ctx.lineTo(size, size - k); ctx.quadraticCurveTo(size, size, size - k, size);
+      ctx.lineTo(k, size); ctx.quadraticCurveTo(0, size, 0, size - k);
+      ctx.lineTo(0, k); ctx.quadraticCurveTo(0, 0, k, 0);
+    } else if (id === 3) {                          // hexagon
+      polygon(6);
+    } else if (id === 4) {                          // shield (upright)
+      var w = size * 0.86, l = (size - w) / 2;
+      ctx.moveTo(l, size * 0.03);
+      ctx.lineTo(size - l, size * 0.03);
+      ctx.lineTo(size - l, size * 0.55);
+      ctx.bezierCurveTo(size - l, size * 0.8, c + w * 0.18, size * 0.95, c, size);
+      ctx.bezierCurveTo(c - w * 0.18, size * 0.95, l, size * 0.8, l, size * 0.55);
+      ctx.closePath();
+    } else if (id === 5) {                          // diamond
+      polygon(4);
+    } else if (id === 6) {                          // 5-point star
+      polygon(5, true);
+    } else if (id === 7) {                          // organic blob (fixed profile)
+      var rad = [1, 0.78, 0.92, 0.72, 0.95, 0.82], pts = [];
+      for (var i = 0; i < 6; i++) {
+        var a = rot - Math.PI / 2 + i * Math.PI / 3;
+        pts.push([c + r * rad[i] * Math.cos(a), c + r * rad[i] * Math.sin(a)]);
+      }
+      var sx = (pts[5][0] + pts[0][0]) / 2, sy = (pts[5][1] + pts[0][1]) / 2;
+      ctx.moveTo(sx, sy);                           // smooth closed curve
+      for (var j = 1; j <= 5; j++) {
+        var nx = pts[(j + 1) % 6];
+        ctx.quadraticCurveTo(pts[j][0], pts[j][1], (pts[j][0] + nx[0]) / 2, (pts[j][1] + nx[1]) / 2);
+      }
+      ctx.quadraticCurveTo(pts[0][0], pts[0][1], sx, sy);
+      ctx.closePath();
+    } else {                                        // pill (tall capsule)
+      var w2 = size * 0.62;
+      ctx.arc(c, w2 / 2, w2 / 2, Math.PI, Math.PI * 2);
+      ctx.arc(c, size - w2 / 2, w2 / 2, 0, Math.PI);
+      ctx.closePath();
+    }
+  }
+
   // Optional letter overlay, drawn last over everything else: one glyph at
   // a random spot with a random size, tilt, and color (plus a dark stroke
   // so it reads on any background). Consumes rand() only when a letter is
@@ -687,6 +802,7 @@
   var currentSeed = parsed ? parsed.seed : randomSeed();
   if (parsed && parsed.family !== null) familySelect.value = FAMILY_NAMES[parsed.family];
   if (parsed && parsed.temp !== null) tempSelect.value = TEMPERAMENT_NAMES[parsed.temp];
+  if (parsed && parsed.shape !== null) shapeSelect.value = SHAPE_NAMES[parsed.shape];
   if (parsed) letterInput.value = parsed.letter.toUpperCase();
 
   function forcedFamily() {
@@ -697,6 +813,11 @@
   function forcedTemperament() {
     var v = tempSelect.value;
     return v === 'random' ? null : TEMPERAMENT_NAMES.indexOf(v);
+  }
+
+  function forcedShape() {
+    var v = shapeSelect.value;
+    return v === 'random' ? null : SHAPE_NAMES.indexOf(v);
   }
 
   function currentLetter() {
@@ -714,11 +835,12 @@
     return encodeURIComponent(c).replace(/\./g, '%2E');
   }
 
-  function hashFor(seed, forced, letter, temp) {
+  function hashFor(seed, forced, letter, temp, shape) {
     var parts = [(seed >>> 0).toString(16),
                  forced === null ? '' : String(forced),
                  letter ? encodeLetter(letter) : '',
-                 (temp === null || temp === undefined) ? '' : String(temp)];
+                 (temp === null || temp === undefined) ? '' : String(temp),
+                 (shape === null || shape === undefined) ? '' : String(shape)];
     while (parts.length > 1 && parts[parts.length - 1] === '') parts.pop();
     return parts.join('.');
   }
@@ -726,14 +848,16 @@
   function render() {
     var forced = forcedFamily();
     var forcedT = forcedTemperament();
+    var forcedS = forcedShape();
     var letter = currentLetter();
     var rand = mulberry32(currentSeed);
     var family = drawAvatar(preview.getContext('2d'), PREVIEW_SIZE, rand,
-                            forced, letter, currentSeed, forcedT);
-    location.hash = hashFor(currentSeed, forced, letter, forcedT);
+                            forced, letter, currentSeed, forcedT, forcedS);
+    location.hash = hashFor(currentSeed, forced, letter, forcedT, forcedS);
     var url = location.href;
     seedLink.innerHTML = 'Style: ' + FAMILY_NAMES[family] + ' &middot; ' +
-      TEMPERAMENT_NAMES[temperamentFromSeed(currentSeed, forcedT)] +
+      TEMPERAMENT_NAMES[temperamentFromSeed(currentSeed, forcedT)] + ' &middot; ' +
+      SHAPE_NAMES[shapeFromSeed(currentSeed, forcedS)] +
       (letter ? ' + ' + letter.toUpperCase() : '') +
       ' &middot; Share this avatar: <a href="' + url + '">' + url + '</a>';
     recordHistory();
@@ -790,7 +914,7 @@
     c.height = THUMB_DRAW;
     c.title = '#' + h;
     drawAvatar(c.getContext('2d'), THUMB_DRAW, mulberry32(p.seed),
-               p.family, p.letter, p.seed, p.temp);
+               p.family, p.letter, p.seed, p.temp, p.shape);
     c.addEventListener('click', function () { location.hash = h; });
     return c;
   }
@@ -819,6 +943,7 @@
   // --- Actions ---
   familySelect.addEventListener('change', render);
   tempSelect.addEventListener('change', render);
+  shapeSelect.addEventListener('change', render);
 
   letterInput.addEventListener('input', function () {
     render();
@@ -835,16 +960,17 @@
     canvas.width = size;
     canvas.height = size;
     drawAvatar(canvas.getContext('2d'), size, mulberry32(currentSeed),
-               forcedFamily(), currentLetter(), currentSeed, forcedTemperament());
+               forcedFamily(), currentLetter(), currentSeed, forcedTemperament(),
+               forcedShape());
     canvas.toBlob(function (blob) {
       if (!blob) return;
       var a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      // hashFor() output is filename-safe: hex/family/temp parts are plain,
-      // and any odd letter character is percent-encoded (no "/" or "?").
+      // hashFor() output is filename-safe: hex/family/temp/shape parts are
+      // plain, and any odd letter character is percent-encoded (no "/" or "?").
       a.download = 'avatar-' + size + 'x' + size + '-' +
                    hashFor(currentSeed, forcedFamily(), currentLetter(),
-                           forcedTemperament()) + '.png';
+                           forcedTemperament(), forcedShape()) + '.png';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -863,12 +989,14 @@
     if (!p) return;
     var famName = p.family === null ? 'random' : FAMILY_NAMES[p.family];
     var tempName = p.temp === null ? 'random' : TEMPERAMENT_NAMES[p.temp];
+    var shapeName = p.shape === null ? 'random' : SHAPE_NAMES[p.shape];
     if (p.seed === currentSeed && familySelect.value === famName &&
-        tempSelect.value === tempName &&
+        tempSelect.value === tempName && shapeSelect.value === shapeName &&
         p.letter.toUpperCase() === currentLetter().toUpperCase()) return;
     currentSeed = p.seed;
     familySelect.value = famName;
     tempSelect.value = tempName;
+    shapeSelect.value = shapeName;
     letterInput.value = p.letter.toUpperCase();
     render();
   });

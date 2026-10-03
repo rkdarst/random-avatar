@@ -33,11 +33,12 @@ function makeEl(id) {
 }
 const ctxs = {};
 const els = {};
-for (const id of ['preview', 'familySelect', 'tempSelect', 'sizeInput', 'letterInput', 'regenBtn',
+for (const id of ['preview', 'familySelect', 'tempSelect', 'shapeSelect', 'sizeInput', 'letterInput', 'regenBtn',
                   'downloadBtn', 'seedLink', 'historyGrid', 'historyEmpty', 'clearHistoryBtn'])
   els[id] = makeEl(id);
 els.familySelect.value = 'random';
 els.tempSelect.value = 'random';
+els.shapeSelect.value = 'random';
 els.sizeInput.value = '256';
 // select options must exist for forcedFamily indexOf lookups (value strings only).
 
@@ -354,6 +355,74 @@ for (const e of ctxLog) {
 }
 check('old links (no temp part) stay vivid-banded',
       oldLinkOk && ((0x80000 >>> 19) & 15) < 4);
+
+// 10. Shapes: seed bits 23-26 pick a silhouette mask with zero RNG, the
+// Shape selector forces one (5th hash part), and the mask never adds any
+// draw before the layer stack it clips.
+const shapeNames = ['none', 'circle', 'rounded', 'hexagon', 'shield',
+                    'diamond', 'star', 'blob', 'pill'];
+els.familySelect.value = 'random'; els.tempSelect.value = 'random';
+els.shapeSelect.value = 'random'; els.letterInput.value = '';
+
+// Bucket mapping, detected from the shape name shown in the style line.
+let shapeMapOk = true;
+for (let k = 0; k < 8; k++) {
+  store.hash = '#deadbeef'; listeners.hashchange();   // wipe stale style text
+  store.hash = '#' + (((k << 23) | 0x11) >>> 0).toString(16) + '.0';
+  listeners.hashchange();
+  if (!els.seedLink.innerHTML.includes(shapeNames[1 + k])) {
+    shapeMapOk = false;
+    console.log(' shape bucket', k, 'want', shapeNames[1 + k], els.seedLink.innerHTML);
+  }
+}
+check('seed bits 23-26 map to the shape silhouettes', shapeMapOk);
+
+// Forced shapes: 5th hash part, style line, and the mask draw itself.
+store.hash = '#cafe0001.0'; listeners.hashchange();
+els.shapeSelect.value = 'hexagon'; els.shapeSelect.fire('change');
+check('forced shape -> 5th hash part', store.hash === 'cafe0001.0...3');
+check('style line shows the forced shape', els.seedLink.innerHTML.includes('hexagon'));
+ctxLog = [];
+els.shapeSelect.fire('change');
+check('mask uses destination-in compositing',
+      ctxLog.some(e => String(e) === 'set:globalCompositeOperation=destination-in'));
+els.shapeSelect.value = 'none'; els.shapeSelect.fire('change');
+ctxLog = []; els.shapeSelect.fire('change');
+const noMask = ctxLog.slice();
+check('square shape emits no compositing',
+      !noMask.some(e => String(e).startsWith('set:globalCompositeOperation')));
+els.shapeSelect.value = 'hexagon'; els.shapeSelect.fire('change');
+ctxLog = []; els.shapeSelect.fire('change');
+const mi = ctxLog.findIndex(e => String(e) === 'set:globalCompositeOperation=destination-in');
+check('mask changes nothing before its own layer (geometry stable)',
+      mi > 1 && noMask.length === mi - 1 &&
+      ctxLog.slice(0, mi - 1).every((e, i) => e === noMask[i]));
+
+// 5-part hash round trips; out-of-range and 6-part hashes are rejected.
+store.hash = '#abcd.3.7.2.6'; listeners.hashchange();
+check('5-part hash sets family, letter, temp, shape',
+      els.familySelect.value === 'stripes' && els.letterInput.value === '7' &&
+      els.tempSelect.value === 'muted' && els.shapeSelect.value === 'star' &&
+      store.hash === 'abcd.3.7.2.6');
+store.hash = '#abcd....4'; listeners.hashchange();
+check('shape-only part after empty gaps', els.shapeSelect.value === 'shield' &&
+      els.familySelect.value === 'random' && store.hash === 'abcd....4');
+store.hash = '#abcd.0..0.0'; listeners.hashchange();
+check('forced square writes shape part 0', els.shapeSelect.value === 'none' &&
+      els.tempSelect.value === 'vivid' && store.hash === 'abcd.0..0.0');
+store.hash = '#abcd....9'; listeners.hashchange();
+check('shape index 9 rejected (state untouched)', els.shapeSelect.value === 'none');
+store.hash = '#abcd.1.2.3.4.5'; listeners.hashchange();
+check('6-part hash rejected (state untouched)',
+      els.shapeSelect.value === 'none' && els.familySelect.value === 'plain');
+
+// History thumbnails carry the forced shape back.
+els.familySelect.value = 'plain'; els.tempSelect.value = 'random';
+els.shapeSelect.value = 'pill'; els.shapeSelect.fire('change');
+const pillThumb = els.historyGrid.children.find(c => c.title === '#abcd.0...8');
+if (pillThumb) { pillThumb.fire('click'); listeners.hashchange(); }
+check('thumbnail click restores the forced shape',
+      !!pillThumb && els.shapeSelect.value === 'pill' && store.hash === 'abcd.0...8');
 
 console.log(fails ? fails + ' FAILURES' : 'ALL PASSED');
 process.exit(fails ? 1 : 0);
