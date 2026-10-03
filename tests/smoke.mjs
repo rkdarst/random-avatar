@@ -33,17 +33,25 @@ function makeEl(id) {
 }
 const ctxs = {};
 const els = {};
-for (const id of ['preview', 'familySelect', 'sizeInput', 'letterInput', 'regenBtn',
+for (const id of ['preview', 'familySelect', 'tempSelect', 'sizeInput', 'letterInput', 'regenBtn',
                   'downloadBtn', 'seedLink', 'historyGrid', 'historyEmpty', 'clearHistoryBtn'])
   els[id] = makeEl(id);
 els.familySelect.value = 'random';
+els.tempSelect.value = 'random';
 els.sizeInput.value = '256';
 // select options must exist for forcedFamily indexOf lookups (value strings only).
 
 const store = { href: 'https://x.test/', hash: '' };
 const listeners = {};
+function makeQuietCtx() {
+  const noop = () => {};
+  return new Proxy({
+    createLinearGradient: () => ({ addColorStop: noop }),
+    createRadialGradient: () => ({ addColorStop: noop }),
+  }, { get(t, p) { return t[p] !== undefined ? t[p] : noop; }, set() { return true; } });
+}
 const tmpCanvas = () => ({ width: 0, height: 0, className: '', title: '', listeners: {},
-  getContext: makeCtx,
+  getContext: makeQuietCtx,
   addEventListener(ev, fn) { this.listeners[ev] = fn; },
   fire(ev) { this.listeners[ev] && this.listeners[ev](); },
   toBlob: (fn) => fn(null) });
@@ -169,19 +177,32 @@ function mulberry32(seed) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+function temperamentFor(seed) {        // temperament bit mapping (mirror)
+  const b = (seed >>> 19) & 15;
+  return b < 4 ? 0 : b < 8 ? b - 3 : [5, 6, 7, 8, 9, 5, 7, 0][b - 8];
+}
+const TEMP_ARCS = { 7: [12, 46], 8: [165, 80] };   // hue-locked temperaments
+const TEMP_GAPS = { 4: [65, 45], 9: [0, 12] };     // gap-overriding temperaments
 function paletteFor(seed) {
   const r = mulberry32(seed >>> 0);
   r(); r(); r(); r();                     // anchors
   const hueA = r() * 360; r(); r();       // gradient stop A: hue, sat, lig
   const scheme = (seed >>> 17) & 3;
-  let hueB;
-  if (scheme === 0) hueB = hueA + 20 + r() * 25;
+  const temp = temperamentFor(seed);
+  let hueA2 = hueA, hueB;
+  if (TEMP_ARCS[temp]) {                  // hue-locked palette
+    const [a0, sp] = TEMP_ARCS[temp];
+    hueA2 = a0 + hueA % sp;
+    hueB = a0 + (hueA2 - a0 + 20 + r() * 40) % sp;
+  }
+  else if (TEMP_GAPS[temp]) hueB = hueA + TEMP_GAPS[temp][0] + r() * TEMP_GAPS[temp][1];
+  else if (scheme === 0) hueB = hueA + 20 + r() * 25;
   else if (scheme === 1) hueB = hueA + 150 + r() * 30;
   else if (scheme === 2) hueB = hueA + 160 + r() * 40;
   else hueB = r() * 360;
   r(); r();                              // gradient stop B: sat, lig
-  return { hueA: ((hueA % 360) + 360) % 360,
-           hueB: ((hueB % 360) + 360) % 360, scheme };
+  return { hueA: ((hueA2 % 360) + 360) % 360,
+           hueB: ((hueB % 360) + 360) % 360, scheme, temp };
 }
 function near(h, h0, tol) {
   const d = Math.abs(((h % 360) + 360) % 360 - ((h0 % 360) + 360) % 360);
@@ -195,7 +216,7 @@ const schemeSeeds = [0x500000, 0x520000, 0x540000, 0x560000];   // schemes 0..3
 check('scheme seeds cover all 4 palettes',
       new Set(schemeSeeds.map(s => paletteFor(s).scheme)).size === 4);
 let paletteOk = true, analogousOk = false;
-for (const seed of schemeSeeds.concat([0x1234abcd, 0xdeadbeef, 0xcafe0001])) {
+for (const seed of schemeSeeds.concat([0x5, 0x1234abcd, 0xdeadbeef, 0xcafe0001])) {
   for (const fam of families) {
     store.hash = '#' + (seed >>> 0).toString(16); listeners.hashchange();
     els.familySelect.value = fam; els.familySelect.fire('change');
@@ -215,11 +236,124 @@ for (const seed of schemeSeeds.concat([0x1234abcd, 0xdeadbeef, 0xcafe0001])) {
       const s = String(e).match(/^stop:hsla?\((\d+)/);
       if (s) stops.push(+s[1]);
     }
-    if (pa.scheme === 0 && stops.length >= 2 && near(stops[0], stops[1], 60)) analogousOk = true;
+    if (pa.scheme === 0 && ![4, 7, 8, 9].includes(pa.temp) &&
+        stops.length >= 2 && near(stops[0], stops[1], 60)) analogousOk = true;
   }
 }
 check('all colors within palette (7 seeds x 13 families)', paletteOk);
 check('analogous scheme keeps gradient stops close', analogousOk);
+
+// 9. Temperaments: seed bits 19-22 or the Palette selector set sat/light
+// bands (plus hue gap/arc rules) without touching the RNG draw order.
+els.tempSelect.value = 'random'; els.sizeInput.value = '256'; els.letterInput.value = '';
+els.familySelect.value = 'random';
+store.hash = '#abcd'; listeners.hashchange();
+els.familySelect.value = 'blocks'; els.tempSelect.value = 'pastel'; els.familySelect.fire('change');
+check('temp appended after family (letter gap kept)', store.hash === 'abcd.8..1');
+els.tempSelect.value = 'random'; els.tempSelect.fire('change');
+check('random temp drops temp part', store.hash === 'abcd.8');
+store.hash = '#abcd..%2E.2'; listeners.hashchange();
+check('4-part hash sets letter + temp',
+      els.letterInput.value === '.' && els.tempSelect.value === 'muted' &&
+      store.hash === 'abcd..%2E.2');
+store.hash = '#abcd...10'; listeners.hashchange();   // 10 is past the last name
+check('invalid temp index leaves state unchanged', els.tempSelect.value === 'muted');
+store.hash = '#abcd'; listeners.hashchange();
+check('no-temp hash resets selector to random', els.tempSelect.value === 'random');
+
+// Forced temperaments: every emitted color sits inside the mode's bands
+// (gradient stops + pattern colors); clash keeps a 65-110 deg gap, mono a
+// <=12 deg gap; earth/ocean lock their gradient stop hues into an arc.
+const BANDS = { vivid: [[60, 90], [35, 75]], pastel: [[30, 55], [62, 88]],
+                muted: [[12, 38], [36, 70]], dark: [[45, 80], [16, 62]],
+                clash: [[75, 95], [30, 80]], neon: [[88, 100], [40, 78]],
+                jewel: [[80, 100], [24, 78]], earth: [[25, 55], [32, 66]],
+                ocean: [[40, 75], [35, 65]], mono: [[28, 58], [30, 85]] };
+const MODE_ARCS = { earth: [12, 46], ocean: [165, 80] };
+let bandOk = true, clashHueOk = true;
+for (const name of Object.keys(BANDS)) {
+  for (const seed of [0x50000000, 0xdeadbeef, 0xcafe0001]) {
+    store.hash = '#' + (seed >>> 0).toString(16); listeners.hashchange();
+    els.tempSelect.value = name;
+    ctxLog = []; els.tempSelect.fire('change');
+    const stopHues = [];
+    for (const e of ctxLog) {
+      const sm = String(e).match(/^stop:hsl\((\d+), ([\d.]+)%, ([\d.]+)%\)$/);
+      if (sm) stopHues.push(+sm[1]);
+      const mm = String(e).match(/hsla?\((\d+), ([\d.]+)%, ([\d.]+)%/);
+      if (!mm) continue;
+      const s = +mm[2], l = +mm[3], [sb, lb] = BANDS[name];
+      if (s < sb[0] - 0.1 || s > sb[1] + 0.1 || l < lb[0] - 0.1 || l > lb[1] + 0.1) {
+        bandOk = false; console.log(' band out:', name, (seed >>> 0).toString(16), s, l);
+      }
+    }
+    if (name === 'clash' && stopHues.length >= 2) {
+      const gap = ((stopHues[1] - stopHues[0]) % 360 + 360) % 360;
+      if (gap < 64 || gap > 111) {
+        clashHueOk = false; console.log(' clash gap out:', (seed >>> 0).toString(16), gap);
+      }
+    }
+    if (MODE_ARCS[name] && stopHues.length >= 2) {   // first two = gradient stops
+      const [a0, sp] = MODE_ARCS[name];
+      for (const h of stopHues.slice(0, 2)) {
+        if (((h - a0) % 360 + 360) % 360 > sp + 1) {
+          clashHueOk = false; console.log(' arc out:', name, (seed >>> 0).toString(16), h);
+        }
+      }
+    }
+  }
+}
+check('forced temperaments stay in their sat/light bands', bandOk);
+check('clash gap and earth/ocean hue arcs hold', clashHueOk);
+
+// Random mode: the 16 seed-bit buckets 19-22 map to the expected
+// temperaments, detected from stop signatures only that mode produces.
+els.tempSelect.value = 'random'; els.familySelect.value = 'plain';
+const BUCKET = [0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 5, 7, 0];
+const NAMEOF = ['vivid', 'pastel', 'muted', 'dark', 'clash',
+                'neon', 'jewel', 'earth', 'ocean', 'mono'];
+let mapOk = true;
+for (let b = 0; b < 16; b++) {
+  const seed = ((b << 19) | 0x11) >>> 0;   // bits 17-18 = 0 (analogous)
+  ctxLog = [];
+  store.hash = '#' + seed.toString(16); listeners.hashchange();
+  const stops = [];
+  for (const e of ctxLog) {
+    const sm = String(e).match(/^stop:hsl\((\d+), ([\d.]+)%, ([\d.]+)%\)$/);
+    if (sm) stops.push({ h: +sm[1], s: +sm[2], l: +sm[3] });
+  }
+  const name = NAMEOF[BUCKET[b]];
+  const gap = stops.length >= 2 ? ((stops[1].h - stops[0].h) % 360 + 360) % 360 : -1;
+  const inArc = (a) => stops.every(t => ((t.h - a[0]) % 360 + 360) % 360 <= a[1]);
+  let ok = stops.length >= 2;
+  if (ok) switch (name) {
+    case 'vivid':  ok = stops.every(t => t.s >= 59.9 && t.s <= 90.1); break;
+    case 'pastel': ok = stops.every(t => t.l >= 71.9); break;
+    case 'muted':  ok = stops.every(t => t.s <= 38.1); break;
+    case 'dark':   ok = stops.every(t => t.l <= 32.1); break;
+    case 'clash':  ok = gap >= 64 && gap <= 111; break;
+    case 'neon':   ok = stops.every(t => t.s >= 87.9); break;
+    case 'jewel':  ok = stops.every(t => t.s >= 79.9 && t.l <= 40.1); break;
+    case 'earth':  ok = inArc([12, 46]); break;
+    case 'ocean':  ok = inArc([165, 80]); break;
+    case 'mono':   ok = gap <= 12.5 && stops.every(t => t.s >= 27.9 && t.s <= 58.1); break;
+  }
+  if (!ok) { mapOk = false; console.log(' bucket', b, name, JSON.stringify(stops)); }
+}
+check('seed bits 19-22 map to the temperament buckets', mapOk);
+
+// Old links (no temp part) keep the vivid bands on their gradient stops.
+els.familySelect.value = 'random';
+ctxLog = [];
+store.hash = '#80000'; listeners.hashchange();   // bits 19-22 = 1 -> vivid
+let oldLinkOk = true;
+for (const e of ctxLog) {
+  const mm = String(e).match(/^stop:hsl\((\d+), ([\d.]+)%, ([\d.]+)%\)$/);
+  if (mm) { const s = +mm[2], l = +mm[3];
+    if (s < 59.9 || s > 90.1 || l < 39.9 || l > 70.1) oldLinkOk = false; }
+}
+check('old links (no temp part) stay vivid-banded',
+      oldLinkOk && ((0x80000 >>> 19) & 15) < 4);
 
 console.log(fails ? fails + ' FAILURES' : 'ALL PASSED');
 process.exit(fails ? 1 : 0);

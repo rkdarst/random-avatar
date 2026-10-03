@@ -164,6 +164,20 @@
       <option value="spiral">Spiral</option>
       <option value="blobs">Blobs</option>
     </select>
+    <label for="tempSelect" title="Color temperament; Random mixes the classic looks with occasional new ones (neon, jewel, earth, ocean, mono)">Palette:</label>
+    <select id="tempSelect">
+      <option value="random" selected>Random</option>
+      <option value="vivid">Vivid</option>
+      <option value="pastel">Pastel</option>
+      <option value="muted">Muted</option>
+      <option value="dark">Dark</option>
+      <option value="clash">Clash</option>
+      <option value="neon">Neon</option>
+      <option value="jewel">Jewel</option>
+      <option value="earth">Earth</option>
+      <option value="ocean">Ocean</option>
+      <option value="mono">Mono</option>
+    </select>
     <label for="sizeInput">Download size (px):</label>
     <input type="number" id="sizeInput" min="16" max="1024" step="1" value="256">
     <label for="letterInput" title="Optional single character drawn on top (any character)">Letter:</label>
@@ -191,8 +205,42 @@
   var FAMILY_NAMES = ['plain', 'shapes', 'rings', 'stripes', 'pixels', 'mirror',
                       'waves', 'rays', 'blocks', 'dots', 'checker', 'spiral', 'blobs'];
 
+  // Temperaments set the sat/lightness character plus an optional hue rule
+  // (a gap override or an arc the two hues are locked into). Seed bits
+  // 19-22 pick one with no RNG: buckets 0-7 are the classic mapping (so
+  // seeds with bit 22 clear are unchanged), 8-15 the extended looks,
+  // weighted so vivid stays the common case. The bands only rescale
+  // existing rand() draws, so the RNG stream and pattern geometry are
+  // untouched.
+  var TEMPERAMENT_NAMES = ['vivid', 'pastel', 'muted', 'dark', 'clash',
+                           'neon', 'jewel', 'earth', 'ocean', 'mono'];
+  var TEMPERAMENTS = [
+    { sat: 60, satSpan: 30, lig: 40, ligSpan: 30, patLig: 35, patLigSpan: 40 },  // vivid
+    { sat: 30, satSpan: 25, lig: 72, ligSpan: 14, patLig: 62, patLigSpan: 26 },  // pastel
+    { sat: 12, satSpan: 26, lig: 42, ligSpan: 22, patLig: 36, patLigSpan: 34 },  // muted
+    { sat: 45, satSpan: 35, lig: 16, ligSpan: 16, patLig: 34, patLigSpan: 28 },  // dark
+    { sat: 75, satSpan: 20, lig: 38, ligSpan: 34, patLig: 30, patLigSpan: 50,   // clash
+      gap: [65, 45] },                                                          // dissonant gap
+    { sat: 88, satSpan: 12, lig: 45, ligSpan: 23, patLig: 40, patLigSpan: 38 },  // neon
+    { sat: 80, satSpan: 20, lig: 24, ligSpan: 18, patLig: 44, patLigSpan: 34 },  // jewel
+    { sat: 25, satSpan: 30, lig: 32, ligSpan: 28, patLig: 44, patLigSpan: 22,   // earth
+      arc: [12, 46] },                                                          // warm hues
+    { sat: 40, satSpan: 35, lig: 35, ligSpan: 30, patLig: 40, patLigSpan: 25,   // ocean
+      arc: [165, 80] },                                                         // cool hues
+    { sat: 28, satSpan: 30, lig: 35, ligSpan: 33, patLig: 30, patLigSpan: 55,   // mono
+      gap: [0, 12] }                                                            // ~single hue
+  ];
+  function temperamentFromSeed(seed, forcedT) {
+    if (forcedT !== null && forcedT !== undefined) return forcedT;
+    var b = (seed >>> 19) & 15;
+    if (b < 4) return 0;
+    if (b < 8) return b - 3;
+    return [5, 6, 7, 8, 9, 5, 7, 0][b - 8];
+  }
+
   var preview = document.getElementById('preview');
   var familySelect = document.getElementById('familySelect');
+  var tempSelect = document.getElementById('tempSelect');
   var sizeInput = document.getElementById('sizeInput');
   var letterInput = document.getElementById('letterInput');
   var regenBtn = document.getElementById('regenBtn');
@@ -219,11 +267,13 @@
     return buf[0];
   }
 
-  // Hash format: seed[.family][.letter]. Family is 0-FAMILY_NAMES.length-1
-  // (one or two digits). The letter is any single character: alphanumerics
-  // are stored lowercased (as in old links), everything else URL-encoded
-  // ("." itself is stored as %2E so it cannot clash with the separators).
-  // "seed..c" means a letter with a random family. Returns null if invalid.
+  // Hash format: seed[.family][.letter][.temperament]. Family is
+  // 0-FAMILY_NAMES.length-1 (one or two digits), temperament is a single
+  // digit 0-TEMPERAMENT_NAMES.length-1. The letter is any single character:
+  // alphanumerics are stored lowercased (as in old links), everything else
+  // URL-encoded ("." itself is stored as %2E so it cannot clash with the
+  // separators). "seed..c" means a letter with a random family. Returns
+  // null if invalid.
   function decodeLetterPart(part) {
     var s;
     try { s = decodeURIComponent(part); } catch (e) { return null; }
@@ -233,8 +283,8 @@
 
   function parseHashStr(str) {
     var parts = (str || '').replace(/^#/, '').split('.');
-    if (parts.length > 3 || !/^[0-9a-fA-F]{1,8}$/.test(parts[0])) return null;
-    var res = { seed: parseInt(parts[0], 16) >>> 0, family: null, letter: '' };
+    if (parts.length > 4 || !/^[0-9a-fA-F]{1,8}$/.test(parts[0])) return null;
+    var res = { seed: parseInt(parts[0], 16) >>> 0, family: null, letter: '', temp: null };
     if (parts.length > 1 && parts[1] !== '') {
       if (/^\d{1,2}$/.test(parts[1])) {
         var fam = parseInt(parts[1], 10);
@@ -251,6 +301,12 @@
       if (c2 === null) return null;
       res.letter = c2;
     }
+    if (parts.length > 3 && parts[3] !== '') {
+      if (!/^\d{1,2}$/.test(parts[3])) return null;
+      var t = parseInt(parts[3], 10);
+      if (t >= TEMPERAMENT_NAMES.length) return null;
+      res.temp = t;
+    }
     return res;
   }
 
@@ -259,7 +315,7 @@
   }
 
   // --- Drawing ---
-  function drawAvatar(ctx, size, rand, forced, letter, seed) {
+  function drawAvatar(ctx, size, rand, forced, letter, seed, forcedT) {
     // Two random anchor points on the square (linear gradient anchors).
     var x1 = rand() * size, y1 = rand() * size;
     var x2 = rand() * size, y2 = rand() * size;
@@ -275,15 +331,25 @@
     // and others colorful, but none becomes a rainbow. Exactly one rand()
     // is consumed for hueB (as jitter or full randomness, matching the old
     // random-hue draw), so pattern geometry of existing links never shifts.
+    // The temperament (seed bits 19-22, or the Palette selector) rescales
+    // the sat/lightness draws below and may replace the hue relation with
+    // a fixed gap or a locked hue arc.
+    var temp = temperamentFromSeed(seed, forcedT);
+    var band = TEMPERAMENTS[temp];
     var hueA = rand() * 360;
-    var satA = 60 + rand() * 30, ligA = 40 + rand() * 30;
+    var satA = band.sat + rand() * band.satSpan, ligA = band.lig + rand() * band.ligSpan;
     var scheme = (seed >>> 17) & 3;
     var hueB;
-    if (scheme === 0) hueB = hueA + 20 + rand() * 25;        // analogous
+    if (band.arc) {                                // hue-locked palettes
+      hueA = band.arc[0] + hueA % band.arc[1];
+      hueB = band.arc[0] + (hueA - band.arc[0] + 20 + rand() * 40) % band.arc[1];
+    }
+    else if (band.gap) hueB = hueA + band.gap[0] + rand() * band.gap[1];
+    else if (scheme === 0) hueB = hueA + 20 + rand() * 25;   // analogous
     else if (scheme === 1) hueB = hueA + 150 + rand() * 30;  // split-complement
     else if (scheme === 2) hueB = hueA + 160 + rand() * 40;  // complementary
     else hueB = rand() * 360;                                // independent
-    var satB = 60 + rand() * 30, ligB = 40 + rand() * 30;
+    var satB = band.sat + rand() * band.satSpan, ligB = band.lig + rand() * band.ligSpan;
 
     // Format an hsl()/hsla() string (alpha given yields hsla with alpha).
     function fmt(h, s, l, alpha) {
@@ -300,8 +366,8 @@
       var p = rand();
       var hue = (p < 0.5 ? hueA : hueB) + (p % 0.5) * 60 - 15;  // +/-15 deg
       if (p > 0.94) hue = hueB + 40;             // occasional derived accent
-      var sat = 60 + rand() * 30;                // 60-90%
-      var lig = 35 + rand() * 40;                // 35-75%, wider for contrast
+      var sat = band.sat + rand() * band.satSpan;
+      var lig = band.patLig + rand() * band.patLigSpan;  // pattern band
       return fmt(hue, sat.toFixed(1), lig.toFixed(1), alpha);
     }
 
@@ -620,11 +686,17 @@
   var parsed = seedFromHash();
   var currentSeed = parsed ? parsed.seed : randomSeed();
   if (parsed && parsed.family !== null) familySelect.value = FAMILY_NAMES[parsed.family];
+  if (parsed && parsed.temp !== null) tempSelect.value = TEMPERAMENT_NAMES[parsed.temp];
   if (parsed) letterInput.value = parsed.letter.toUpperCase();
 
   function forcedFamily() {
     var v = familySelect.value;
     return v === 'random' ? null : FAMILY_NAMES.indexOf(v);
+  }
+
+  function forcedTemperament() {
+    var v = tempSelect.value;
+    return v === 'random' ? null : TEMPERAMENT_NAMES.indexOf(v);
   }
 
   function currentLetter() {
@@ -642,22 +714,26 @@
     return encodeURIComponent(c).replace(/\./g, '%2E');
   }
 
-  function hashFor(seed, forced, letter) {
-    var h = (seed >>> 0).toString(16);
-    if (forced !== null) h += '.' + forced;
-    if (letter) h += (forced === null ? '..' : '.') + encodeLetter(letter);
-    return h;
+  function hashFor(seed, forced, letter, temp) {
+    var parts = [(seed >>> 0).toString(16),
+                 forced === null ? '' : String(forced),
+                 letter ? encodeLetter(letter) : '',
+                 (temp === null || temp === undefined) ? '' : String(temp)];
+    while (parts.length > 1 && parts[parts.length - 1] === '') parts.pop();
+    return parts.join('.');
   }
 
   function render() {
     var forced = forcedFamily();
+    var forcedT = forcedTemperament();
     var letter = currentLetter();
     var rand = mulberry32(currentSeed);
     var family = drawAvatar(preview.getContext('2d'), PREVIEW_SIZE, rand,
-                            forced, letter, currentSeed);
-    location.hash = hashFor(currentSeed, forced, letter);
+                            forced, letter, currentSeed, forcedT);
+    location.hash = hashFor(currentSeed, forced, letter, forcedT);
     var url = location.href;
-    seedLink.innerHTML = 'Style: ' + FAMILY_NAMES[family] +
+    seedLink.innerHTML = 'Style: ' + FAMILY_NAMES[family] + ' &middot; ' +
+      TEMPERAMENT_NAMES[temperamentFromSeed(currentSeed, forcedT)] +
       (letter ? ' + ' + letter.toUpperCase() : '') +
       ' &middot; Share this avatar: <a href="' + url + '">' + url + '</a>';
     recordHistory();
@@ -714,7 +790,7 @@
     c.height = THUMB_DRAW;
     c.title = '#' + h;
     drawAvatar(c.getContext('2d'), THUMB_DRAW, mulberry32(p.seed),
-               p.family, p.letter, p.seed);
+               p.family, p.letter, p.seed, p.temp);
     c.addEventListener('click', function () { location.hash = h; });
     return c;
   }
@@ -742,6 +818,7 @@
 
   // --- Actions ---
   familySelect.addEventListener('change', render);
+  tempSelect.addEventListener('change', render);
 
   letterInput.addEventListener('input', function () {
     render();
@@ -758,15 +835,16 @@
     canvas.width = size;
     canvas.height = size;
     drawAvatar(canvas.getContext('2d'), size, mulberry32(currentSeed),
-               forcedFamily(), currentLetter(), currentSeed);
+               forcedFamily(), currentLetter(), currentSeed, forcedTemperament());
     canvas.toBlob(function (blob) {
       if (!blob) return;
       var a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      // hashFor() output is filename-safe: hex/family parts are plain, and
-      // any odd letter character is percent-encoded (no "/" or "?").
+      // hashFor() output is filename-safe: hex/family/temp parts are plain,
+      // and any odd letter character is percent-encoded (no "/" or "?").
       a.download = 'avatar-' + size + 'x' + size + '-' +
-                   hashFor(currentSeed, forcedFamily(), currentLetter()) + '.png';
+                   hashFor(currentSeed, forcedFamily(), currentLetter(),
+                           forcedTemperament()) + '.png';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -784,10 +862,13 @@
     var p = seedFromHash();
     if (!p) return;
     var famName = p.family === null ? 'random' : FAMILY_NAMES[p.family];
+    var tempName = p.temp === null ? 'random' : TEMPERAMENT_NAMES[p.temp];
     if (p.seed === currentSeed && familySelect.value === famName &&
+        tempSelect.value === tempName &&
         p.letter.toUpperCase() === currentLetter().toUpperCase()) return;
     currentSeed = p.seed;
     familySelect.value = famName;
+    tempSelect.value = tempName;
     letterInput.value = p.letter.toUpperCase();
     render();
   });
